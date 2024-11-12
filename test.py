@@ -73,77 +73,64 @@ def check_normal_form(csv_filePath, FD, Key, MVD):
 # Function to identify if the given table is in 1NF
 def check_1NF(csv_filePath):
     # Checks if the table is in 1NF by verifying that all cell values are atomic (i.e., no multi-valued attributes)
-    # Open the CSV file in read mode
-    with open(csv_filePath, mode='r', encoding='ISO-8859-1') as file:
-        csv_reader = csv.reader(file)
+        df = pd.read_excel(csv_filePath)
         
-        # Iterate over each row and cell
-        for row in csv_reader:
-            if not is_row_atomic(row):
-                return False  # table have non-atomic values
-    return True # table doesn't have non-atomic values
-
-def is_row_atomic(row):
-
-    for cell in row:
-        # Strip whitespace to ensure no issues with spaces around commas
-        cell = cell.strip()
-        
-        # Check if a comma exists within the cell
-        if ',' in cell:
-            return False
-    return True 
-
+        for col in df.columns:
+            for value in df[col]:
+                if isinstance(value, str) and ',' in value:
+                    return False  # Not in 1NF
+        return True  # In 1NF
 # Function to identify if the given table is in 2NF
 def check_2NF(FD, Key):
-    for dependency in FD:
+    for i in FD:
         # splitting the functional dependency
-        determinant, dependent = dependency.split("->")
-
-        # if lhs is not part of candidate key 
-        if(determinant not in Key):
+        F = i.split("->")
+        # if the F[0] has more than 1 element then there is no partial dependency as the attributes is dependent on more than one attribute
+        if("," in F[0]):
             continue
-        # if lhs is a proper subset of candidate key
-        elif((determinant in Key) and (len(determinant) != len(Key))):
+        # in A->B if A is not in Key then there would be no partial dependencies
+        elif(F[0] not in Key):
+            continue
+        # in A->B if A is a subset of Key and not the key itself then partial dependency exists 
+        elif((F[0] in Key) and (len(F[0]) != len(Key))):
             return False # Partial dependency exists
     return True # No Partial dependency exists
 
-# Function to identify if the given table is in 3NF
-def check_3NF(FD, Key):
-        
-    # Create a set of all attributes that are part of any candidate key
-    prime_attributes = set(attr for key in Key for attr in key)
+
+def is_superkey(determinant, candidate_keys):
+    # Check if the determinant is a superkey by comparing with candidate keys
+    return any(set(determinant) == set(key) or set(determinant).issuperset(set(key)) for key in candidate_keys)
+
+def check_3NF(FD, candidate_keys):
+    # Create a set of all attributes that are part of any candidate key (prime attributes)
+    prime_attributes = set(attr for key in candidate_keys for attr in key)
 
     # Traverse through each functional dependency
-    for x in FD:
+    for dependency in FD:
         # Splitting each functional dependency into lhs (determinant) and rhs (dependent)
-        lhs, rhs = x.split('->')
+        lhs, rhs = dependency.split('->')
         FD_l = [attr.strip() for attr in lhs.strip().split(',')]
         FD_r = [attr.strip() for attr in rhs.strip().split(',')]
 
-        # Check if LHS is a superkey or RHS contains non-prime attributes
-        if not is_superkey(FD_l, Key):
-            if all(attr in prime_attributes for attr in FD_r):
-                return False  # Violation found
+        # Check if LHS is a superkey or RHS only contains prime attributes
+        if not is_superkey(FD_l, candidate_keys):
+            # If there are any non-prime attributes in the RHS, it's a violation of 3NF
+            if any(attr not in prime_attributes for attr in FD_r):
+                return False  # 3NF violation found
 
-    return True  # No violations found
+    return True  # No 3NF violations found
 
-def is_superkey(det, keys):
-    
-    det_set = set(det)
-    return any(det_set.issuperset(key) for key in keys)
 
-# Function to identify if the given table is in BCNF
-def check_BCNF(FD, Key):
-    for fd in FD:
-        lhs, rhs = fd.split("->")
+def check_BCNF(FD, candidate_keys):
+    for dependency in FD:
+        lhs, rhs = dependency.split("->")
         lhs = [attr.strip() for attr in lhs.strip().split(',')]
 
         # Check if the LHS of the functional dependency is a superkey
-        if not is_superkey(lhs, Key):
-            return False  # Found a violation
+        if not is_superkey(lhs, candidate_keys):
+            return False  # Found a BCNF violation
 
-    return True  # No violations found
+    return True  # No BCNF violations found
 
 # Function to identify if the given table is in 4NF
 def check_4NF(FD, Key, MVD):
@@ -242,10 +229,13 @@ def generate_combinations(num_elements, total_combinations):
         combinations.append(new_row)
     return combinations
 
-# Function to convert the given table to 1NF
 def convert_to_1NF(csv_filePath):  
     # Read the CSV file into a DataFrame
     df = pd.read_excel(csv_filePath)
+
+    if check_1NF(csv_filePath):
+        print("Data is already in 1NF.")
+        return df, {}, False  # No conversion needed
     
     normalized_columns = {}
     non_atomic_columns = df.copy()
@@ -257,15 +247,27 @@ def convert_to_1NF(csv_filePath):
             # Split values by ',' and expand rows
             df_expanded = df[column].str.split(',', expand=True).stack().reset_index(level=1, drop=True)
             df_expanded = df_expanded.str.strip()  # Remove extra spaces
-            normalized_columns[column] = df_expanded
+            normalized_columns[column] = column
             
             # Drop the violating column from the non-atomic columns
             non_atomic_columns = non_atomic_columns.drop(column, axis=1)
     
+    print(generate_sql_query_1nf(non_atomic_columns.columns, Key=None))
+    for normalized_columns in normalized_columns.items():
+        print(generate_sql_query_1nf(primary_key+[normalized_columns], Key))
+    
     return non_atomic_columns, normalized_columns
 
-# Function to convert the given table to 2NF
-def convert_to_2NF(FD, Key):
+def generate_sql_query_1nf(non_atomic_columns, Key=None):
+    sql_query = f"CREATE TABLE (\n"
+    for col in non_atomic_columns:
+        sql_query += f"    {col} VARCHAR(255),\n"
+    if Key:
+        pk_str = ", ".join(Key)
+        sql_query += f"    PRIMARY KEY ({pk_str}),\n"
+    return sql_query.rstrip(',\n') + "\n);"
+
+def convert_to_2NF(FD, candidate_keys):
     tables = {}
     # travering through each fd
     for fd in FD:
@@ -324,109 +326,82 @@ def convert_to_2NF(FD, Key):
             check_key = 1
     if(check_key == 0):
         tables["Candidate"] = Key
+    
     return tables
 
-# Function to convert the given table to 3NF
-def convert_to_3NF(FD, Key, tables):
+
+def is_superkey(determinant, candidate_keys):
+    # Check if the determinant is a superkey
+    return any(set(determinant) == set(key) or set(determinant).issuperset(set(key)) for key in candidate_keys)
+
+def convert_to_3NF(FD, candidate_keys, tables):
     new_tables = {}
-    lhs_fd = []
+
     for fd in FD:
-        # splitting the left hand side and right hand side elements from each FD.
+        # Split the left-hand side (LHS) and right-hand side (RHS) of the FD
         lhs, rhs = fd.split('->')
-        l = lhs.strip().split(',')
-        k = []
-        for i in l:
-            k.append(i.strip())
-        lhs_fd.extend(k)
+        lhs = [attr.strip() for attr in lhs.split(',')]
+        rhs = [attr.strip() for attr in rhs.split(',')]
 
-    for tname, attr in tables.items():
-        # checking whether each table name is present in lhs_fd
-        # if not present, we check each Functional dependency whether it requires new decomposition or not
-        if(tname not in lhs_fd):
-            for fd in FD:
-                l, r = fd.split("->")
-                lhs = l.strip().split(",")
-                rhs = r.strip().split(",")
-                if(len(lhs) == 1):
-                    # checking whether a transitive dependency exists or not
-                    if((set(lhs).issubset(set(attr))) and (set(rhs).issubset(set(attr))) and (not set(lhs).issubset(set(Key)))):
-                        new_attr = attr
-                        for i in rhs:
-                            new_attr.remove(i)
-                        if(new_tables.get(tname) == None):
-                            new_tables[tname] = []
-                            new_tables[tname].extend(new_attr)
-                        else:
-                            new_tables[tname].extend(new_attr)
-                        if(new_tables.get(lhs[0]) == None):
-                            new_tables[lhs[0]] = []
-                            new_tables[lhs[0]].extend(lhs + rhs)
-                        else:
-                            new_tables[lhs[0]].extend(rhs)
+        # Check for transitive dependency: if LHS is not a superkey but RHS is non-prime
+        if not is_superkey(lhs, candidate_keys):
+            # Create a new table for the transitive dependency
+            table_name = "_".join(lhs)
+            if table_name not in new_tables:
+                new_tables[table_name] = set(lhs + rhs)
+            else:
+                new_tables[table_name].update(rhs)
+        else:
+            # Add the FD to an existing or new main table if LHS is a superkey
+            main_table_name = "Main_Table"
+            if main_table_name not in new_tables:
+                new_tables[main_table_name] = set(lhs + rhs)
+            else:
+                new_tables[main_table_name].update(rhs)
 
-        # if table name is present then adding table directly to a new table.
-        elif(tname in lhs_fd):
-            new_tables[tname] = attr
-
-    # removing duplicate attributes for each new table.
+    # Remove duplicate attributes in each table
     for table, attributes in new_tables.items():
-        new_tables[table] = list(set(attributes))
+        new_tables[table] = list(attributes)
+
     return new_tables
 
 # Function to convert the given table to BCNF
-def convert_to_BCNF(FD, Key, tables):
+def convert_to_BCNF(FD, candidate_keys, tables):
     new_tables = {}
-    count = 0
-    #traversing through each functional dependency
+
+    # Traverse through each functional dependency
     for fd in FD:
-        lhs_fd = []
-        rhs_fd = []
         lhs, rhs = fd.split('->')
-        l = lhs.strip().split(',')
-        for i in l:
-            lhs_fd.append(i.strip())
-        r = rhs.strip().split(',')
-        for i in r:
-            rhs_fd.append(i.strip())
-        # if fd has only 1 attribute on left hand side
-        if(len(lhs_fd) == 1):
-            # if the table is already available in original table
-            if(lhs_fd[0] in tables.keys()):
-                # add the same table_name-attribute pair to the new table 
-                new_tables[lhs_fd[0]] = tables.get(lhs_fd[0])
-            # if the table is not available in original table
-            else:
-                # create a new table_name-attribute pair and add to the new table
-                new_tables[lhs_fd[0]] = []
-                new_tables[lhs_fd[0]].extend(rhs_fd)
-        elif(len(lhs_fd)>1):
-            # if left hand side of the functional dependency is equvivalent to key
-            if(sorted(lhs_fd) == sorted(Key)):
-                # Add the rhs to the "Candidate" table
-                if(new_tables.get('Candidate') == None):
-                    new_tables["Candidate"] = []
-                    new_tables["Candidate"].extend(Key + rhs_fd)
-                else:
-                    new_tables["Candidate"].extend(rhs_fd)
-            # if left hand side of the functional dependency is not equvivalent to key
-            else:
-                # Add the lhs to the "Candidate" table so that the relation between new decomposed table and candidate table exists
-                if(new_tables.get('Candidate') == None):
-                    new_tables["Candidate"] = []
-                    new_tables["Candidate"].extend(Key + lhs_fd)
-                else:
-                    new_tables["Candidate"].extend(lhs_fd)
-                # Create a new table-attribute pair denoting a decomposition
-                new_tables[count] = []
-                new_tables[count].extend(lhs_fd + rhs_fd)
-            count += 1
-    # travering through each table-attribute pair, to get only distinct attribute pairs in the table
+        lhs_fd = [attr.strip() for attr in lhs.split(',')]
+        rhs_fd = [attr.strip() for attr in rhs.split(',')]
+
+        # If LHS is not a superkey, we need to decompose
+        if not is_superkey(lhs_fd, candidate_keys):
+            # Create a new table for this dependency
+            new_table_name = "_".join(lhs_fd)  # Use a meaningful name based on LHS attributes
+            new_tables[new_table_name] = lhs_fd + rhs_fd
+            
+            # Ensure the candidate table retains the key and the LHS
+            if "Candidate" not in new_tables:
+                new_tables["Candidate"] = list(candidate_keys[0])  # Assuming there's at least one candidate key
+            new_tables["Candidate"].extend(lhs_fd)
+
+        # If LHS is a superkey, add the attributes to the candidate table
+        else:
+            if "Candidate" not in new_tables:
+                new_tables["Candidate"] = list(candidate_keys[0])  # Assuming there's at least one candidate key
+            new_tables["Candidate"].extend(rhs_fd)  # Include RHS to the candidate table
+
+    # Remove duplicate attributes in each table
     for table, attributes in new_tables.items():
-        c = set()
-        for i in attributes:
-            c.add(i)
-        new_tables[table] = list(c)
-    # returning the new resultant table
+        new_tables[table] = list(set(attributes))
+
+    """
+    table_keys = list(new_tables.keys())  # Convert keys to a list
+    if len(table_keys) > 1:  # Check if there are at least two tables
+        del new_tables[table_keys[1]]
+    """
+
     return new_tables
 
 # Function to convert the given table to 4NF
@@ -479,26 +454,30 @@ def convert_to_4NF(FD, Key, MVD, tables):
         
     return merged_dict
 
+
 def detect_join_dependencies(FD):
-    
     join_dependencies = []
+    
+    # Iterate over FD to identify join dependencies based on MVDs
     for fd in FD:
         lhs, rhs = fd.split("->")
         lhs_attributes = lhs.strip().split(",")
         rhs_attributes = rhs.strip().split(",")
-        # If both sides have more than one attribute, consider it a potential join dependency
-        if len(lhs_attributes) > 1 and len(rhs_attributes) > 1:
+        
+        # A join dependency is valid if the LHS and RHS have multiple attributes and are not trivial dependencies
+        if len(lhs_attributes) > 1 or len(rhs_attributes) > 1:
             join_dependencies.append(fd.strip())
+            
     return join_dependencies
 
-# Function to convert the given table to 5NF
+# Function to convert the given tables to 5NF
 def convert_to_5NF(FD):
     # Detect join dependencies
     join_dependencies = detect_join_dependencies(FD)
     
     new_tables = {}
     table_counter = 1
-    df = pd.read_csv(csv_filePath)
+    df = pd.read_excel(csv_filePath)
     
     # Decompose based on detected join dependencies
     for jd in join_dependencies:
@@ -522,16 +501,80 @@ def convert_to_5NF(FD):
 
     return new_tables
 
+
 # Function to generate SQL queries
+def format_sql_query(query):
+
+    # Format a SQL query to make it more readable with proper indentation and line breaks.
+    
+    # Remove extra spaces
+    query = ' '.join(query.split())
+    
+    # Add newline after CREATE TABLE
+    query = query.replace('CREATE TABLE', 'CREATE TABLE\n  ')
+    
+    # Add newline and indent after opening parenthesis
+    query = query.replace(' (', ' (\n    ')
+    
+    # Add newlines and indents for column definitions
+    parts = query.split(',')
+    formatted_parts = []
+    
+    for i, part in enumerate(parts):
+        part = part.strip()
+        
+        # Handle PRIMARY KEY constraint
+        if 'PRIMARY KEY' in part and '(' in part:
+            pk_part = part.split('PRIMARY KEY')
+            if len(pk_part) > 1:
+                formatted_parts.append(pk_part[0].strip())
+                formatted_parts.append('    PRIMARY KEY' + pk_part[1].strip())
+            else:
+                formatted_parts.append(part)
+        
+        # Handle FOREIGN KEY constraints
+        elif 'FOREIGN KEY' in part:
+            formatted_parts.append('    ' + part)
+            
+        # Normal column definitions
+        else:
+            # Don't add indent for the first part (it's already indented)
+            if i == 0:
+                formatted_parts.append(part)
+            else:
+                formatted_parts.append('    ' + part)
+    
+    # Join parts back together
+    query = ',\n'.join(formatted_parts)
+    
+    # Add proper closing
+    query = query.replace(');', '\n);')
+    
+    return query
+
+def format_sql_statements(sql_statements):
+   
+    formatted_statements = []
+    
+    for stmt in sql_statements:
+        formatted_stmt = format_sql_query(stmt)
+        formatted_statements.append(formatted_stmt)
+    
+    # Join statements with two newlines between them
+    return '\n\n'.join(formatted_statements)
+
+# Modify the generate_sql_queries function to use the formatter
 def generate_sql_queries(FD, Key, tables, data_types):
     sql_statements = []
     fd_lhs = []
     fd_rhs = []
     lhs_fd = []
+    
     for fd in FD:
         l,r = fd.split("->", 1)
         l1= l.strip().split(",")
         lhs_fd.extend(l1)
+    
     for fd in FD:
         lhs, rhs = fd.split('->')
         x = lhs.strip().split(',')
@@ -545,7 +588,7 @@ def generate_sql_queries(FD, Key, tables, data_types):
 
     for table_name, columns in tables.items():
         foreign_query = ""
-        query = f'CREATE TABLE {table_name} ('
+        query = f'CREATE TABLE ('
     
         count_of_keys = sum(1 for x in columns if x in fd_lhs)
 
@@ -578,10 +621,12 @@ def generate_sql_queries(FD, Key, tables, data_types):
     
         sql_statements.append(query)
     
-    # Output the generated SQL statements
-    print("Generated SQL Statements:")
-    for stmt in sql_statements:
-        print(stmt)
+    # Format the SQL statements
+    formatted_sql = format_sql_statements(sql_statements)
+    
+    # Print the formatted SQL
+    print("\nGenerated SQL Statements:")
+    print(formatted_sql)
     
     return sql_statements
 
@@ -589,31 +634,34 @@ def generate_sql_queries(FD, Key, tables, data_types):
 # Input commands
 csv_filePath = input("Enter input filepath: ")
 
-
-# Taking input for functional dependencies
+# Taking in put for functional dependencies and storing in FD
 FD = []
-print("Enter Functional Dependencies in the format: A->B; A,B->C; A->B,C")
+print("Enter Functional Dependencies:   Eg(A->B, A,B->C, A->B,C)")
+print("Enter 'Next' if completed")
+i = 1
+while(i):
+    x = str(input())
+    if(x=="Next"):
+        i=0
+    else:
+        FD.append(x)
 
-# Take input as a single line and split by semicolons
-fd_input = input()
-FD = [fd.strip() for fd in fd_input.split(';') if fd.strip()]
-
-print("Functional Dependencies:", FD)
-
-
-# Taking input for multi-valued dependencies
+# Taking input for multi valued dependencies and storing in MVD
 MVD = []
-print("Enter Multi Valued Dependencies in the format: A->>B; A->>C")
-
-# Take input as a single line and split by semicolons
-mvd_input = input()
-MVD = [mvd.strip() for mvd in mvd_input.split(';') if mvd.strip()]
-
-print("Multi Valued Dependencies:", MVD)
+print("Enter Multi Valued Dependencies:   Eg(A->>B, A->>C)")
+print("Enter 'Next' if completed")
+i = 1
+while(i):
+    x = str(input())
+    if(x=="Next"):
+        i=0
+    else:
+        MVD.append(x)
 
 # Taking input for Primary Key
 print("Enter Key:")
 Key = input().split(",")
+primary_key = list(Key)
 
 # Taking input if the user wants to Find the highest normal form of the input table? (1: Yes, 2: No):
 input_normal_form = "The given table is "
@@ -646,16 +694,8 @@ result_1NF = []
 
 
 if(user_choice >= 1):
-    if(not check_1NF(csv_filePath)):
-        result_1NF = convert_to_1NF(csv_filePath)
-        print("Enter output csv file path to store the result after converting to 1NF")
-        # Open the .csv file in write mode
-        with open('converted1NF.csv', mode='w', newline='') as file:
-            # Create a csv.writer object
-            writer = csv.writer(file)
-        # Write the data to the .csv file
-            for row in result_1NF:
-                writer.writerow(row)
+    result_1NF = convert_to_1NF(csv_filePath)    
+        
 res_tables = {}
 # based on k the functions from convert_to_1NF to convert_to_(k)NF will be executed
 if(user_choice >= 2):
@@ -673,25 +713,5 @@ if(user_choice == 5):
 data_types = check_datatypes(csv_filePath)
 
 # Function call to generate SQL queries for the new decomposed relations
-SQL_queries = generate_sql_queries(FD, Key, res_tables, data_types)
-print(SQL_queries)
-
-# Loading the results to output.txt file
-with open('Output.txt', mode='w', newline='') as file:
-    # Create a csv.writer object
-    writer = csv.writer(file, delimiter=" ")
-
-# If the input table is not in 1NF, write the converted 1NF table to the file
-    if len(result_1NF) > 0:
-        for row in result_1NF:
-            writer.writerow(row)  # Writing each row in result_1NF as CSV
-        writer.writerow([])  
-    
-    # Write the SQL queries to the files
-    for query in SQL_queries:
-        writer.writerow(query)  # Writing each query as a row in the output
-    writer.writerow([])  # Write empty rows as a separator
-    
-    # Writing the highest normal form of the input table, if required
-    if x == 1:
-        writer.writerow([input_normal_form])  # Writing the input normal form
+if(user_choice >= 2):
+    SQL_queries = generate_sql_queries(FD, Key, res_tables, data_types)
